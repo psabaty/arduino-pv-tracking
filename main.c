@@ -17,9 +17,6 @@ EnergyMonitor emon3;            // 4 Idem que dessus pour une troisième pince a
 #include <LiquidCrystal_I2C.h>            // 2 inclure la librairie "LiquidCrystal_I2C.h" 
 //LiquidCrystal_I2C lcd(0x27, 16, 4);     // 2 définir l'adresse de l'écran LCD, le nombre de caractères et le nombre de lignes
 LiquidCrystal_I2C lcd(0x3f,16,2);         // 2 Si Le LCD ne fonctionne pas, alors mettre // sur la ligne précédente et enlever les // sur cette ligne
-
-#include <DallasTemperature.h>            // 7 librairie de la sonde Dallas
-#include <OneWire.h>                      // 7 librairie qui va gérer les différente adresses des sondes de température
 #include <Time.h>						              // librairie de definition et calcul du temps
 
 //#include <Servo.h>                      // 3 inclure la librairie "Servo.h" 
@@ -47,15 +44,7 @@ int compteur_impulsion = 1;           // 5 compteur du nombre d'impulsion effect
 
 unsigned long previous_millis = 0;   // 2 création de la variable "previous_millis" qui garde en mémoire le temps qui s'écoule en millièmes de seconde"
 
-const int SONDE=12;          // 7 numéro de broche sur l'arduino pour la temperature
-float Temp=0 ;               // 7 création d'une variable temporaire de la températude du ballon d'eau chaude
-float TEMPERATURE0 = 0;      // 7 variable flotante pour récupérer la température 
-//long Compteur=0;           // 7 initialisation du compteur qui décompte le temps écoulé pendant lequel l'eau stagne sous les 55°C
 time_t Compteur = now(); 	   // nombre de secondes depuis le 1 Janvier 1970
-
-OneWire ONE_WIRE_BUS (SONDE);              // 7 création de l'objet ONE_WIRE_BUS1 sur la pin SOND_1 (48 dans mon cas)
-DallasTemperature sensor(&ONE_WIRE_BUS);   // 7 utilisation du bus OneWire
-DeviceAddress sensor1DeviceAddress;        // 7 déclaration de "sensor1DeviceAddress" comme adresse de la sonde 1
 
 //-----------------------INITIALISATION DU PROGRAMME-------------------------------------------------
 
@@ -78,10 +67,6 @@ void setup()
   pinMode(led, OUTPUT);               // 6 La broche sur lequel est la variable led est une sortie 
 
   pinMode(pin_bouton_changer_ecran, INPUT_PULLUP); // 5 Le bouton poussoir est une entrée forcé à 0V si on appuis pas et à 5V  si on appuie
-
-  sensor.begin();                                 // 7 Activation du capteur de temperature
-  sensor.getAddress(sensor1DeviceAddress, 0);     // 7 Demande l'adresse du capteur à l'index 0
-  sensor.setResolution(sensor1DeviceAddress, 12); // 7 Résolution 12 bits
 }
 
  //----------------------- DEMARRAGE DE LA BOUCLE----------------------------------------------------
@@ -101,9 +86,6 @@ void loop()
   emon3.calcVI(20,2000);                      // 4 idem qu'au dessus mais pour la troisième pince ampèrmétrique (et du coup c'est plus lisible sur le LCD)
   //emon1.serialprint();                      //(1) Si on ecrit cette ligne , toutes les valeurs calculées precedemment sont envoyées vers l'ordinateur
   
-  sensor.requestTemperatures();               // 7 Demande la température du capteur
-  Temp=sensor.getTempCByIndex(0);             // 7 Récupération de la température en celsius à l'index 0
-
    //--------------------------Etalonnage des volts et ampères sans LCD--------------------------------------
 
   Serial.print("Est-ce le bon voltage? ");      // 1 envoyer vers l'ordinateur le texte " Est-ce le bon voltage? "
@@ -151,11 +133,6 @@ void loop()
 
   */      
   //--------------- POUR FAIRE VARIER L'INTENSITE LUMINEUSE DE LA LED SUIVANT LA PUISSANCE CONSOMMEE DESIREE et la temperature---------
-
-  if (Temp>0) {                   // 7 pour éviter les sauts de valeur négative de la sonde dallas (genre artefact)
-    TEMPERATURE0=Temp;            // 7 si la temp >0 on récupère la valeur de la température sinon laisser l'artefact de coté
-  }
-  //Compteur= Compteur+1;         // 7 le comptage du temps commence
       
   //-------------------------------------Si il y a des Watts , balance en dans le chauffe eau---------------------------------
 
@@ -167,21 +144,6 @@ void loop()
     intensite_led -= 5;                                // 6 diminue alors l'intensité de la led
   }                 
   
-  //---------------------------MAIS SI LE BALLON EST FROID (moins de 40°C)-----------------------------------
-       
-  if (TEMPERATURE0 < 40) {      // 7 Si la température est inféfieur à 40°C
-    intensite_led = 250;        // 7 on met la led à fond (pour chauffer le ballon d'eau chaude)
-  }
-  //--------------------------- ET POUR AVOIR DE L'EAU A 55°C UNE FOIS PAr SEMAINE (pour eliminer la legionelose)-------     
-
-  if (TEMPERATURE0 > 55) {      // 7 Si le chauffe atteint naturellement 55°C (avec le photovoltaique), 
-    Compteur = now();           // 7 alors on remet le compteur a now()
-  }
-  //if (Compteur > 100000 )           // 7 si le compteur arrive à 100 000 (dans la réalité +/- 5 jours a vérifier =(+/- 432 000 secondes)
-  if (now() >= (Compteur + 604800)) { // 604800 = 7 jours, baisser a 432000 pour 5 jours
-    intensite_led = 250;              // 7 on met la led à fond (pour chauffer le ballon d'eau chaude)
-  }
-
   analogWrite(led, intensite_led); // 6 la led va s'éclairer au niveau de la valeur de intensite_led
   
   
@@ -189,8 +151,6 @@ void loop()
   Serial.print("   ");                // cela permet aussi de voir ou en est le programme et de gérer les difficultés
   Serial.print(w_Chauffe_Eau);
   Serial.print("   w");
-  Serial.print(TEMPERATURE0);
-  Serial.println(" C");
   
   // --------------------ECRIRE SUR LCD ET POUR CHANGER LES VALEUR DuLCD AVEC UN BOUTON POUSSOIR------------------------------------------------
 
@@ -237,23 +197,7 @@ void loop()
     lcd.print(kwh_Chauffe_Eau,4);     // 4 puis écrire la consomation cumulée de mon chauffe eau en Kwh
   }
 
-  else if (compteur_impulsion == 3) { //7 Sinon s'il est égale à 3 on affiche l'écran numéro 3
-    
-    // -----ECRAN N° 3:-------------------------------
-    //1ere ligne, Temperature du chauffe eau--------
-    lcd.setCursor(0, 0);              // 7 positionner le curseur sur la ligne 1 et à gauche
-    lcd.print("Chauffe eau ");        // 7 ecrire "Chauffe eau" pour comprendre que nous sommes sur l'écran n°2
-    lcd.print(TEMPERATURE0,0);        // 7 puis écrire la valeur de temperature sans virgule
-    lcd.print(" C");                  // 7 ecrire " C" pour Celcius
-    
-
-    //2eme ligne, Edition du compteur avant montée en température
-    lcd.setCursor(0, 1);              // 7 positionner le curseur sur la ligne 2 et position 3
-    lcd.print("Compteur "); 
-    lcd.print(Compteur);              // 7 puis écrire la valeur du compteur
-  }
-  
-  else if (compteur_impulsion == 4) { // 5 si on a appuié 4 fois sur le bouton poussoir,
+  else {                              // 5 si on a appuié 4 fois sur le bouton poussoir,
     compteur_impulsion = 1;           // 5 alors on remet le compteur à 0 et on retrouve l'écran n°1
   }
 
