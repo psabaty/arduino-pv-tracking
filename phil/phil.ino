@@ -1,4 +1,4 @@
-#define TINKERCAD 1
+// #define TINKERCAD 1
 
 #include "LiquidCrystal_I2C.h"
 
@@ -6,7 +6,7 @@
 #include "EmonLib.h"
 #endif 
 
-const bool DEBUG_ENABLED = true;
+const bool SIMULATION_FOR_DEBUG = false;
 
 unsigned long REQUEST_DELAY_MS = 3000;
 const double PUISSANCE_MAX_CHAUFFE_EAU__W = 2000;
@@ -70,8 +70,8 @@ void setup()
    * loop
   */ 
 void loop(){
-  loop_directTarget();
-  //loop_debugPlotter();
+  //loop_directTarget();
+  loop_debug();
 }
 
 void loop_directTarget()
@@ -127,6 +127,16 @@ void loop_directTarget()
     if( consignePuissance_W != lastConsignePuissance_W ){
       baseSimulationConsignePuissance_W = lastConsignePuissance_W;
       lastConsignePuissance_W = consignePuissance_W;
+
+      // f telle que f(consigne_255) = consignePuissance_W subit un HYSTERESIS quand consigne_255 descend sous k=16, jusqu'à remonter au dessus de k=32
+      // sinon, dans le plage k=[18..64], on a une approximation satisfaisante avec :
+      // pour la tension : g(k)=2.1*k-30
+      // pour la puissance : f(k)=(2000*230)*g(k) = 18.2*k - 261
+      //   et son opposée : k = (P+261)/18.2 = 0.055*P + 14.28
+      if(consignePuissance_W < 50){ consigne_255 = 0; }
+      else {consigne_255 = 0.55*consignePuissance_W+14.28;}
+
+      // ancien calcul :
       consigne_255 = int(LED_MAX_255*(consignePuissance_W/PUISSANCE_MAX_CHAUFFE_EAU__W));
       analogWrite(ledOptocoupleur_pin, consigne_255);
       lastAppliedRequestTime_ms = millis();
@@ -150,7 +160,7 @@ void loop_directTarget()
 */
 int simulationPuissanceChauffeEau() {
   puissanceSimulee = 0;
-  if(DEBUG_ENABLED){
+  if(SIMULATION_FOR_DEBUG){
     double progressRate = min(1, (double)(millis()-lastAppliedRequestTime_ms) / (double)(REQUEST_DELAY_MS-1000));
     //puissanceSimulee = int(progressRate * consignePuissance_W);
     puissanceSimulee = int(baseSimulationConsignePuissance_W 
@@ -211,3 +221,36 @@ void displayToSerial() {
   Serial.println();
 
 }
+
+
+void loop_debug()
+{
+
+  // faire durer la boucle au moins 0.5 seconde
+  delay(max(500 - (millis() - lastLoopTime_ms), 0));
+  long lastLoopDuration_ms = (millis() - lastLoopTime_ms);
+  
+
+  // Pour debug, forcer la valeur de puissanceFournieParEDF_W depuis l'interface série
+  // Pour sortir du débug, envoyer "-1".
+  if(Serial.available() > 0) { debug_puissanceEdf = double(Serial.parseInt());}
+  if(debug_puissanceEdf != -1) { consigne_255 = debug_puissanceEdf; }
+  
+  // Traitement / asservissement
+  // Seulement si la dernière consigne a été appliquée depuis plus de 3 secondes
+  hasRecentRequest = ( millis()-lastAppliedRequestTime_ms < REQUEST_DELAY_MS );
+  
+  //consigne_255 = int(LED_MAX_255*(consignePuissance_W/PUISSANCE_MAX_CHAUFFE_EAU__W));
+  analogWrite(ledOptocoupleur_pin, consigne_255);
+  lastAppliedRequestTime_ms = millis();
+
+  // Affichages LCD
+  displaytoLCD();
+
+  // affichage Serie
+  displayToSerial();
+
+  lastLoopTime_ms = millis();  
+  loopCount++;
+
+}  
