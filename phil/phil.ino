@@ -117,7 +117,7 @@ void loop_directTarget()
     //   en l'occurence on soustrait cette valeur positive -> baisse
     // en résumé, on applique toujours la même formule :
     double delta_W = injectedPower_W - POWER_INJECTION_TARGET_W;
-    powerRequest_W = powerRequest_W + delta_W;
+    powerRequest_W = powerRequest_W + (delta_W / 2);
     
     // si la consigne est superieure au max de la charge, on plafonne
     powerRequest_W = min(powerRequest_W, MAX_LOAD_REQUEST_W);
