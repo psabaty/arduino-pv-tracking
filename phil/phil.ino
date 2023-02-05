@@ -13,6 +13,7 @@ const double THEORICAL_MAX_LOAD_W = 2000;
 const double MAX_LOAD_REQUEST_W = 750;
 const double MIN_LOAD_REQUEST_FOR_START = 150;
 const double MIN_LOAD_REQUEST_FOR_STOP = 100;
+const double POWER_INJECTION_TARGET_W = 15;
 
 int sct013_pin = 1;
 int basseTensionAC_pin = 2;
@@ -115,7 +116,8 @@ void loop_directTarget()
     //   alors on baisse la consigne avec cette puissance 
     //   en l'occurence on soustrait cette valeur positive -> baisse
     // en résumé, on applique toujours la même formule :
-    powerRequest_W = powerRequest_W + injectedPower_W;
+    double delta_W = injectedPower_W - POWER_INJECTION_TARGET_W;
+    powerRequest_W = powerRequest_W + delta_W;
     
     // si la consigne est superieure au max de la charge, on plafonne
     powerRequest_W = min(powerRequest_W, MAX_LOAD_REQUEST_W);
