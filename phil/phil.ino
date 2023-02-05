@@ -1,4 +1,4 @@
-#define TINKERCAD 1
+// #define TINKERCAD 1
 
 #include "LiquidCrystal_I2C.h"
 
@@ -6,12 +6,13 @@
 #include "EmonLib.h"
 #endif 
 
-const bool SIMULATION_FOR_DEBUG = true;
+const bool SIMULATION_FOR_DEBUG = false;
 
 unsigned long REQUEST_DELAY_MS = 3000;
 const double THEORICAL_MAX_LOAD_W = 2000;
 const double MAX_LOAD_REQUEST_W = 750;
-const double MIN_LOAD_REQUEST_W = 150;
+const double MIN_LOAD_REQUEST_FOR_START = 150;
+const double MIN_LOAD_REQUEST_FOR_STOP = 100;
 
 int sct013_pin = 1;
 int basseTensionAC_pin = 2;
@@ -26,8 +27,9 @@ int lastLedRequest = 0;
 double baseLedRequestForSimulation = 0;
 
 double injectedEnergy_Wh = 0.0; 
-//double energieTheoriqueAutoConsommee_Wh = 0.0;
-double lastLoopEnergy_Ws = 0;
+double consumedEnergy_Wh = 0.0;
+double lastLoopInjectedEnergy_Ws = 0;
+double lastLoopConsumedEnergy_Ws = 0;
 int injectedPower_W = 0;
 int debug_injectedPower = -1;
 int simulatedPower_W = 0;
@@ -36,7 +38,7 @@ unsigned long lastLoopTime_ms;
 unsigned long lastAppliedRequestTime_ms = 0;
 bool hasRecentRequest = false;
 int loopCount=0;
-int screenNumber = 2;
+int screenNumber = 1;
 
 #ifndef TINKERCAD 
 EnergyMonitor emon1;
@@ -100,14 +102,6 @@ void loop_directTarget()
 
   // Pour debug (DEBUG==true), simuler une charge qui suit la consigne
   injectedPower_W = injectedPower_W - simulateLoadFromPowerRequest();
-
-  // calculs cumuls energie 
-  if(injectedPower_W>0.0) {
-    lastLoopEnergy_Ws = injectedPower_W * ((double)lastLoopDuration_ms/1000);
-    injectedEnergy_Wh = injectedEnergy_Wh + (lastLoopEnergy_Ws/3600);
-  }
-  // energieTheoriqueAutoConsommee_Wh = energieTheoriqueAutoConsommee_Wh + (powerRequest_W * lastLoopDuration_ms/(3600*1000));
-
   
   // Traitement / asservissement
   // Seulement si la dernière consigne a été appliquée depuis plus de 3 secondes
@@ -126,8 +120,11 @@ void loop_directTarget()
     // si la consigne est superieure au max de la charge, on plafonne
     powerRequest_W = min(powerRequest_W, MAX_LOAD_REQUEST_W);
     
-    // si la consigne est inferieure à la puissance MIN qu'accepte la charge, on met à zero (pas de min() possible ici)
-    if(powerRequest_W < MIN_LOAD_REQUEST_W){ powerRequest_W = 0; }
+    // si la consigne est inferieure à la puissance de declechement ET que la charge n'est pas allumée, on met à zero 
+    // si la consigne est inferieure à la puissance de coupure on met à zero  
+    bool isLoadActive = (lastpowerRequest_W > 0);
+    if( powerRequest_W < MIN_LOAD_REQUEST_FOR_START && !isLoadActive){ powerRequest_W = 0; }
+    if( powerRequest_W < MIN_LOAD_REQUEST_FOR_STOP){ powerRequest_W = 0; }
 
     // Application de la consigne
     // (seulement si elle est différente de la précédente)
@@ -137,13 +134,18 @@ void loop_directTarget()
 
       // Traitement
       ledRequest = powerToLed(powerRequest_W);
-
-      // ancien calcul :
-      //ledRequest = int(LED_MAX_255*(powerRequest_W/MAX_LOAD_REQUEST_W));
       analogWrite(ledOptocoupleur_pin, ledRequest);
       lastAppliedRequestTime_ms = millis();
     }
   }
+
+  // calculs cumuls energie 
+  if(injectedPower_W>0.0) {
+    lastLoopInjectedEnergy_Ws = injectedPower_W * ((double)lastLoopDuration_ms/1000);
+    injectedEnergy_Wh = injectedEnergy_Wh + (lastLoopInjectedEnergy_Ws/3600);
+  }
+  lastLoopConsumedEnergy_Ws = powerRequest_W * ((double)lastLoopDuration_ms/1000);
+  consumedEnergy_Wh = consumedEnergy_Wh + (lastLoopConsumedEnergy_Ws/(3600));
 
   // Affichages LCD
   displaytoLCD();
@@ -173,71 +175,6 @@ double powerToVolts(int power_w){
   return power_w * (230/THEORICAL_MAX_LOAD_W);
 }
 
-
-void loop_incrementalTracking()
-{
-
-#ifndef TINKERCAD 
-  emon1.calcVI(20,2000); 
-  injectedPower_W = -1 * int(emon1.realPower);
-#endif
-  // faire durer la boucle au moins 0.5 seconde
-  delay(max(500 - (millis() - lastLoopTime_ms), 0));
-  long lastLoopDuration_ms = (millis() - lastLoopTime_ms);
-  
-  // Pour debug, forcer la valeur de injectedPower_W depuis l'interface série
-  // Pour sortir du débug, envoyer "-1".
-  // si la valeur n'est pas multiple de 10, on ajoute du bruit
-  if(Serial.available() > 0) { debug_injectedPower = double(Serial.parseInt());}
-  if(debug_injectedPower != -1) { 
-    injectedPower_W = debug_injectedPower; 
-    if(debug_injectedPower%10 != 0) { injectedPower_W = injectedPower_W + (random(50)-25); }
-  }
-
-  // Pour debug (DEBUG==true), simuler une charge qui suit la consigne
-  injectedPower_W = injectedPower_W - simulateLoadFromLedRequest();
-
-  // calculs cumuls energie 
-  if(injectedPower_W>0.0) {
-    lastLoopEnergy_Ws = injectedPower_W * ((double)lastLoopDuration_ms/1000);
-    injectedEnergy_Wh = injectedEnergy_Wh + (lastLoopEnergy_Ws/3600);
-  }
-  
-  // Traitement / asservissement
-  // Seulement si la dernière consigne a été appliquée depuis plus de 3 secondes
-  hasRecentRequest = ( millis()-lastAppliedRequestTime_ms < REQUEST_DELAY_MS );
-  if( ! hasRecentRequest ) {
-
-    // si injectedPower_W est positif, alors on incremente la consigne LED 
-    // si injectedPower_W est négatif, alors on decremente la consigne LED
-    if(injectedPower_W<0) {
-      ledRequest = max(0, ledRequest -1);
-    }
-    if(injectedPower_W>0) {
-      ledRequest = min(255, ledRequest +1);
-    }
-  
-    // Appliation de la consigne
-    // (seulement si elle est différente de la précédente)
-    if( ledRequest != lastLedRequest ){
-      baseLedRequestForSimulation = lastLedRequest;
-      lastLedRequest = ledRequest;
-      analogWrite(ledOptocoupleur_pin, ledRequest);
-      lastAppliedRequestTime_ms = millis();
-    }
-  }
-
-  // Affichages LCD
-  displaytoLCD();
-
-  // affichage Serie
-  displayToSerial();
-
-  lastLoopTime_ms = millis();  
-  loopCount++;
-
-}  
-
 /**
  * Simulation : 
  * la charge appplique sa consigne progressivement, en une seconde de moins que le delai impartit
@@ -254,26 +191,6 @@ int simulateLoadFromPowerRequest() {
   return simulatedPower_W;
 }
 
-/**
- * Simulation : 
- * la charge appplique sa consigne immediatement
-  // f telle que f(ledRequest) = powerRequest_W subit un HYSTERESIS quand ledRequest descend sous k=16, jusqu'à remonter au dessus de k=32
-  // sinon, dans le plage k=[18..64], on a une approximation satisfaisante avec :
-  // pour la tension : g(k)=2.1*k-30
-  // pour la puissance : f(k)=(2000*230)*g(k) = 18.2*k - 261
-*/
-int simulateLoadFromLedRequest() {
-  simulatedPower_W = 0;
-  if(SIMULATION_FOR_DEBUG){
-    // basse "ax+b"
-    simulatedPower_W = max(0, ledToPower(ledRequest));
-    // hysteresis
-    if(ledRequest>baseLedRequestForSimulation && ledRequest<32) {simulatedPower_W = simulatedPower_W/10;}
-  
-  }
-  return simulatedPower_W;
-}
-
 void displaytoLCD() {
 
   int screenChangeRequest = digitalRead(button_pin);
@@ -283,25 +200,27 @@ void displaytoLCD() {
   if(screenNumber>2) { screenNumber=1; }
 
   //lcd.clear();
-  lcd.setCursor(0,0);  lcd.print(String(screenNumber) + "-"+ String(hasRecentRequest ? "-" : " ")+" Pi=" + injectedPower_W + "W ");
   //char message0[16];   sprintf(message0, "%d/ Pi:%4dW", screenNumber, injectedPower_W);
   //lcd.setCursor(0,0);  lcd.print(String(message0));
+  //lcd.setCursor(0,0);  lcd.print(String(screenNumber) + "-"+ String(hasRecentRequest ? "-" : " ")+" Pi=" + injectedPower_W + "W ");
     
 
   switch (screenNumber)
   {
-  case 1:
-    lcd.setCursor(0,1);  lcd.print(String("Ei=" + String(injectedEnergy_Wh / 1000, 3) + "KWh"));
+  case 1:lcd.setCursor(0,1);  
+    lcd.setCursor(0,0);  lcd.print("Pi:" + String(injectedPower_W) + "W "+String(hasRecentRequest ? "*" : " ")+"    ");
+    //char message0[16];   snprintf(message0, 16, "Pi:%5dW %s", int(powerRequest_W), (hasRecentRequest ? "*" : " "));
+    //lcd.setCursor(0,0);  lcd.print(String(message0));
+    char message1[16];   snprintf(message1, 16, "R:%3dW %3dV %d ", int(powerRequest_W), int(voltRequest_V), ledRequest);
+    lcd.setCursor(0,1);  lcd.print(String(message1));
+    
     break;
   
   case 2:
-    //char message2[16];   sprintf(message2, "Req: %4dW %s(%d)", int(powerRequest_W), delayedMsg, ledRequest);
-    //lcd.setCursor(0,1);  lcd.print(String(message2));
-    lcd.setCursor(0,1);  
-    //lcd.print("Req:"+ String(int(powerRequest_W))+"W"+ String(hasRecentRequest ? "." : " ")+"(" + String(ledRequest) + ")");
-    lcd.print("R:" + String(int(powerRequest_W))+"W-" + String(int(voltRequest_V))+"V-"+ String(ledRequest)+".");
+    lcd.setCursor(0,0);  lcd.print(String("Ei=" + String(injectedEnergy_Wh / 1000, 3) + "KWh    "));
+    lcd.setCursor(0,1);  lcd.print(String("Ea=" + String(consumedEnergy_Wh / 1000, 3) + "KWh    "));
     break;
-  
+    
   default:
     lcd.setCursor(0,1);  lcd.print(String("*****"));
     break;
@@ -315,10 +234,10 @@ void displayToSerial() {
   Serial.print("Pi:");   Serial.print(injectedPower_W);
   //Serial.print(",Ei:"); Serial.print(injectedEnergy_Wh);
   Serial.print(",Preq:"); Serial.print(powerRequest_W);
-  Serial.print(",PbaseSim:"); Serial.print(basePowerRequestForSimulation_W);
-  Serial.print(",Psim:");  Serial.print(simulatedPower_W);
+  //Serial.print(",PbaseSim:"); Serial.print(basePowerRequestForSimulation_W);
+  //Serial.print(",Psim:");  Serial.print(simulatedPower_W);
   Serial.print(",hRR:");  Serial.print(hasRecentRequest);
-  //Serial.print(",e:");  Serial.print(lastLoopEnergy_Ws);
+  //Serial.print(",e:");  Serial.print(lastLoopInjectedEnergy_Ws);
   Serial.print(",t:");  Serial.print((millis() - lastLoopTime_ms));
   Serial.print(",c:");  Serial.print(loopCount);
   Serial.println();
