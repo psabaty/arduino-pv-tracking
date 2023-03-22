@@ -6,27 +6,46 @@
 #include "EmonLib.h"
 #endif 
 
-
-const double MIN_LED_REQUEST = 14;
+// settings
+const double MIN_LED_REQUEST = 25;
 const double MAX_LED_REQUEST = 99;
 const double POWER_INJECTION_TARGET_W = 25;
+const int LOOP_DURATION_MS = 1000;
+const int SAMPLING_PERIOD_IN_LOOPS = 300; // 300 = 5 minutes
 
+// pins
 int injection_sct013_pin = 1;
 int consumption_sct013_pin = 0;
 int basseTensionAC_pin = 2;
 int ledOptocoupleur_pin = 9; 
 int button_pin = 3; 
 
-int ledRequest = 0;
+// main tracking
 int injectedPower_W = 0;
 int debug_injectedPower = -1;
 int consumedPower_W = 0;
+int ledRequest = 0;
+double average_injectedPower_W = 0;
+double average_consumedPower_W = 0;
+double average_ledRequest = 0;
+
+// base for energy 
+double lastLoopInjectedEnergy_Ws = 0;
+double lastLoopConsumedEnergy_Ws = 0;
+
+// cumulated energy
 double injectedEnergy_Wh = 0.0; 
 double consumedEnergy_Wh = 0.0; 
 double overConsumedEnergy_Wh = 0.0;
-double lastLoopInjectedEnergy_Ws = 0;
-double lastLoopConsumedEnergy_Ws = 0;
+
+// sampled energy (for external monitoring)
+double injectedEnergySample_Wh = 0.0; 
+double consumedEnergySample_Wh = 0.0; 
+double overConsumedEnergySample_Wh = 0.0;
+
+// misc
 unsigned long lastLoopTime_ms;
+long lastLoopDuration_ms = 0;
 int screenNumber = 1;
 int loopCount=0;
 
@@ -70,9 +89,12 @@ void loop()
   consumedPower_W = int(emon2.realPower);
 #endif
 
-  // Attente : faire durer la boucle au moins 1 seconde
-  delay(max(1000 - (millis() - lastLoopTime_ms), 0));
-  long lastLoopDuration_ms = (millis() - lastLoopTime_ms);
+  // ajustement (reduction de bruit) sur les mesures
+  if(consumedPower_W>-5 && consumedPower_W<=5){consumedPower_W=0;}
+
+  // Attente : faire durer la boucle au moins LOOP_DURATION_MS
+  delay(max(LOOP_DURATION_MS - (millis() - lastLoopTime_ms), 0));
+  lastLoopDuration_ms = (millis() - lastLoopTime_ms);
 
   // Pour debug, forcer la valeur de injectedPower_W depuis l'interface série
   // Pour sortir du débug, envoyer "-1".
@@ -100,30 +122,68 @@ void loop()
   analogWrite(ledOptocoupleur_pin, (ledRequest<MIN_LED_REQUEST)? 0: ledRequest);
 
   // calculs cumuls energie 
-  lastLoopInjectedEnergy_Ws = injectedPower_W * ((double)lastLoopDuration_ms/1000);
-  if(lastLoopInjectedEnergy_Ws>0.0) {
-    injectedEnergy_Wh = injectedEnergy_Wh + (lastLoopInjectedEnergy_Ws/3600);
-  }
-  lastLoopConsumedEnergy_Ws = consumedPower_W * ((double)lastLoopDuration_ms/1000);
-  consumedEnergy_Wh = consumedEnergy_Wh + (lastLoopConsumedEnergy_Ws/(3600));
-  // si on consomation EDF (injection negative) alors que la charge est allumée (consumedPower>~0),
-  // alors on est en "sur-consomation" (conso EDF qu'on aurait pas eu sans le systeme)
-  if(lastLoopInjectedEnergy_Ws<0.0 && (consumedPower_W>4)) {
-    overConsumedEnergy_Wh = overConsumedEnergy_Wh - (lastLoopInjectedEnergy_Ws/3600);
-  }
+  refreshEnergyCounters();
   
   // Affichages 
   displaytoLCD();
-  if(loopCount%3==0){ displayToSerial(); }
+  if(loopCount%SAMPLING_PERIOD_IN_LOOPS==0){ outputSampleToSerial(); }
   
 
   lastLoopTime_ms = millis();  
   loopCount++;
 }  
 
+/**
+ * Energy counters will (or not) as long as the program runs.
+ * Sampled energy values (xxxxEnergySample_Wh) will reset every periodic serial output.
+*/
+void refreshEnergyCounters() {
+  lastLoopInjectedEnergy_Ws = injectedPower_W * ((double)lastLoopDuration_ms/1000);
+  if(lastLoopInjectedEnergy_Ws>0.0) {
+    injectedEnergy_Wh = injectedEnergy_Wh + (lastLoopInjectedEnergy_Ws/3600);
+    injectedEnergySample_Wh = injectedEnergySample_Wh + (lastLoopInjectedEnergy_Ws/3600);
+  }
+  lastLoopConsumedEnergy_Ws = consumedPower_W * ((double)lastLoopDuration_ms/1000);
+  consumedEnergy_Wh = consumedEnergy_Wh + (lastLoopConsumedEnergy_Ws/(3600));
+  consumedEnergySample_Wh = consumedEnergySample_Wh + (lastLoopConsumedEnergy_Ws/(3600));
+  // si il y a une consomation EDF (injection negative) alors que la charge est allumée (consumedPower>~0),
+  // alors on est en "sur-consomation" (conso EDF qu'on aurait pas eu sans le systeme)
+  if(lastLoopInjectedEnergy_Ws<0.0 && (consumedPower_W>4)) {
+    overConsumedEnergy_Wh = overConsumedEnergy_Wh - (lastLoopInjectedEnergy_Ws/3600);
+    overConsumedEnergySample_Wh = overConsumedEnergySample_Wh - (lastLoopInjectedEnergy_Ws/3600);
+  }
+
+  average_injectedPower_W += ((double)injectedPower_W/SAMPLING_PERIOD_IN_LOOPS);
+  average_consumedPower_W += ((double)consumedPower_W/SAMPLING_PERIOD_IN_LOOPS);
+  average_ledRequest += ((double)ledRequest/SAMPLING_PERIOD_IN_LOOPS);
+}  
+
+
+void outputSampleToSerial() {
+  // send json object to serial
+  Serial.println(
+    "{\"Pi\":"+String(average_injectedPower_W)
+      +",\"Pac\":"+String(average_consumedPower_W)
+      +",\"k\":"+String(average_ledRequest)
+      +",\"Ei\":"+String(injectedEnergySample_Wh)
+      +",\"Eac\":"+String(consumedEnergySample_Wh)
+      +",\"Esc\":"+String(overConsumedEnergySample_Wh)
+    +"}"
+  );
+  // reset sampled energy counters
+  injectedEnergySample_Wh = 0;
+  consumedEnergySample_Wh = 0;
+  overConsumedEnergySample_Wh = 0;
+
+  average_injectedPower_W = 0;
+  average_consumedPower_W = 0;
+  average_ledRequest = 0;
+}
+
 void displaytoLCD() {
 
   int screenChangeRequest = digitalRead(button_pin);
+  bool tooLowToStart = (ledRequest<MIN_LED_REQUEST);
 
   if(screenChangeRequest==0) { screenNumber++; }
   if(screenNumber>3) { screenNumber=1; }
@@ -131,7 +191,7 @@ void displaytoLCD() {
   switch (screenNumber)
   {
   case 1:  
-    lcd.setCursor(0,0);  lcd.print("Pi :" + String(injectedPower_W) + "W "+"     ");
+    lcd.setCursor(0,0);  lcd.print("Pi :" + String(injectedPower_W) + "W"+String(tooLowToStart ? ".":" ")+"     ");
     char message1[16];   snprintf(message1, 16, "Pac:%3dW  k:%d ", int(consumedPower_W), ledRequest);
     lcd.setCursor(0,1);  lcd.print(String(message1));
     
@@ -150,13 +210,4 @@ void displaytoLCD() {
     lcd.setCursor(0,1);  lcd.print(String("*****"));
     break;
   }
-}
-
-void displayToSerial() {
-  Serial.println(
-    //'{"Pi":'+String(injectedPower_W)+',"Pac":'+String(consumedPower_W)+",'k':"+String(ledRequest)+"}"
-    "{\"Pi\":"+String(injectedPower_W)+",\"Pac\":"+String(consumedPower_W)+",\"k\":"+String(ledRequest)+"}"
-  
-  );
-
 }
